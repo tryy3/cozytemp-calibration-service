@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strings"
 
 	pgxuuid "github.com/jackc/pgx-gofrs-uuid"
 
@@ -62,20 +63,24 @@ func main() {
 		}
 		log.Printf("After Calibration Data: %v", afterCalibrationData)
 
+		skipCompletedMessage := calibrationData.NodeIdentifier != ""
 		err = insertCalibratedData(cfg, &afterCalibrationData)
-		if err != nil {
+		if err != nil && strings.Contains(err.Error(), "duplicate key value violates unique constraint") {
+			log.Printf("Calibrated data already exists, skipping insertion")
+			skipCompletedMessage = true
+		} else if err != nil {
 			log.Printf("Error inserting calibrated data: %v", err)
 			continue
-		}
-		log.Printf("Calibrated data inserted successfully")
-
-		jsonData, err := json.Marshal(afterCalibrationData)
-		if err != nil {
-			log.Printf("Error marshalling after calibration data: %v", err)
-			continue
+		} else {
+			log.Printf("Calibrated data inserted successfully")
 		}
 
-		if calibrationData.NodeIdentifier != "" {
+		if !skipCompletedMessage {
+			jsonData, err := json.Marshal(afterCalibrationData)
+			if err != nil {
+				log.Printf("Error marshalling after calibration data: %v", err)
+				continue
+			}
 			err = producer.WriteMessage(context.Background(), []byte(calibrationData.NodeIdentifier), jsonData)
 			if err != nil {
 				log.Printf("Error producing message: %v", err)
