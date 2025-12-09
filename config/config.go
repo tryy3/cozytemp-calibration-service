@@ -17,7 +17,7 @@ func Load() *Config {
 	return &Config{
 		KafkaBrokers:       getBrokers(),
 		KafkaConsumerTopic: getEnv("KAFKA_CONSUMER_TOPIC", "cozytemp-temperature-calibration-realtime"),
-		KafkaProducerTopic: getEnv("KAFKA_PRODUCER_TOPIC", "cozytemp-temperature-calibration-completed"),
+		KafkaProducerTopic: getEnv("KAFKA_PRODUCER_TOPIC", ""),
 		KafkaConsumerGroup: getEnv("KAFKA_CONSUMER_GROUP", "cozytemp-calibration-realtime-service"),
 		PostgresURL:        getEnv("POSTGRES_URL", "postgresql://postgres:postgres@localhost:5432/cozytemp"),
 	}
