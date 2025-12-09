@@ -63,7 +63,7 @@ func main() {
 		}
 		log.Printf("After Calibration Data: %v", afterCalibrationData)
 
-		skipCompletedMessage := calibrationData.NodeIdentifier != ""
+		skipCompletedMessage := cfg.KafkaProducerTopic == ""
 		err = insertCalibratedData(cfg, &afterCalibrationData)
 		if err != nil && strings.Contains(err.Error(), "duplicate key value violates unique constraint") {
 			log.Printf("Calibrated data already exists, skipping insertion")
