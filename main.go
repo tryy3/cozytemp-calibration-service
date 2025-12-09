@@ -4,7 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
+	"os"
 	"strings"
 
 	pgxuuid "github.com/jackc/pgx-gofrs-uuid"
@@ -17,13 +18,18 @@ import (
 )
 
 func main() {
+	slog.SetDefault(
+		slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+			Level: slog.LevelInfo,
+		})),
+	)
 	cfg := config.Load()
 
-	log.Printf("Starting CozyTemp Calibration Service")
-	log.Printf("Kafka Brokers: %v", cfg.KafkaBrokers)
-	log.Printf("Consumer Topic: %s", cfg.KafkaConsumerTopic)
-	log.Printf("Producer Topic: %s", cfg.KafkaProducerTopic)
-	log.Printf("Consumer Group: %s", cfg.KafkaConsumerGroup)
+	slog.Info("Starting CozyTemp Calibration Service")
+	slog.Info("Kafka Brokers", "brokers", cfg.KafkaBrokers)
+	slog.Info("Consumer Topic", "topic", cfg.KafkaConsumerTopic)
+	slog.Info("Producer Topic", "topic", cfg.KafkaProducerTopic)
+	slog.Info("Consumer Group", "group", cfg.KafkaConsumerGroup)
 	consumer := kafka.NewConsumer(cfg.KafkaBrokers, cfg.KafkaConsumerTopic, cfg.KafkaConsumerGroup)
 	defer consumer.Close()
 
@@ -33,24 +39,24 @@ func main() {
 	for {
 		msg, err := consumer.FetchMessage(context.Background())
 		if err != nil {
-			log.Printf("Error reading message: %v", err)
+			slog.Error("Error reading message", "error", err)
 			continue
 		}
 
 		var calibrationData models.BeforeCalibrationDataEvent
 		err = json.Unmarshal(msg.Value, &calibrationData)
 		if err != nil {
-			log.Printf("Error unmarshalling message: %v", err)
+			slog.Error("Error unmarshalling message", "error", err)
 			continue
 		}
-		log.Printf("Calibration Data: %v", calibrationData)
+		slog.Info("Calibration Data", "data", calibrationData)
 
-		calibratedTemperature, err := calibrateData(cfg, &calibrationData)
+		calibratedTemperature, err := calibrateData(&calibrationData)
 		if err != nil {
-			log.Printf("Error calibrating data: %v", err)
+			slog.Error("Error calibrating data", "error", err)
 			continue
 		}
-		log.Printf("Data calibrated successfully")
+		slog.Info("Data calibrated successfully")
 
 		afterCalibrationData := models.AfterCalibrationDataEvent{
 			NodeIdentifier:        calibrationData.NodeIdentifier,
@@ -61,42 +67,42 @@ func main() {
 			RawTemperature:        calibrationData.RawTemperature,
 			CalibratedTemperature: calibratedTemperature,
 		}
-		log.Printf("After Calibration Data: %v", afterCalibrationData)
+		slog.Info("After Calibration Data", "data", afterCalibrationData)
 
 		skipCompletedMessage := cfg.KafkaProducerTopic == ""
 		err = insertCalibratedData(cfg, &afterCalibrationData)
 		if err != nil && strings.Contains(err.Error(), "duplicate key value violates unique constraint") {
-			log.Printf("Calibrated data already exists, skipping insertion")
+			slog.Info("Calibrated data already exists, skipping insertion")
 			skipCompletedMessage = true
 		} else if err != nil {
-			log.Printf("Error inserting calibrated data: %v", err)
+			slog.Error("Error inserting calibrated data", "error", err)
 			continue
 		} else {
-			log.Printf("Calibrated data inserted successfully")
+			slog.Info("Calibrated data inserted successfully")
 		}
 
 		if !skipCompletedMessage {
 			jsonData, err := json.Marshal(afterCalibrationData)
 			if err != nil {
-				log.Printf("Error marshalling after calibration data: %v", err)
+				slog.Error("Error marshalling after calibration data", "error", err)
 				continue
 			}
 			err = producer.WriteMessage(context.Background(), []byte(calibrationData.NodeIdentifier), jsonData)
 			if err != nil {
-				log.Printf("Error producing message: %v", err)
+				slog.Error("Error producing message", "error", err)
 				continue
 			}
-			log.Printf("Message produced successfully")
+			slog.Info("Message produced successfully")
 		} else {
-			log.Printf("Node identifier is empty, skipping message production")
+			slog.Info("Node identifier is empty, skipping message production")
 		}
 
 		err = consumer.CommitMessages(context.Background(), msg)
 		if err != nil {
-			log.Printf("Error committing message: %v", err)
+			slog.Error("Error committing message", "error", err)
 			continue
 		}
-		log.Printf("Message committed successfully")
+		slog.Info("Message committed successfully")
 	}
 }
 
@@ -127,13 +133,11 @@ func linearRegression(A_values []float64, B_values []float64) (float64, float64)
 	return resultA, resultB
 }
 
-func calibrateData(cfg *config.Config, data *models.BeforeCalibrationDataEvent) (float64, error) {
+func calibrateData(data *models.BeforeCalibrationDataEvent) (float64, error) {
 	resultA, resultB := linearRegression(sensorValues, controlValues)
-	log.Printf("Result A: %v", resultA)
-	log.Printf("Result B: %v", resultB)
 
 	calibratedTemperature := (resultA * data.RawTemperature) + resultB
-	log.Printf("Calibrated Temperature: %v", calibratedTemperature)
+	slog.Info("Calibrated Temperature", "temperature", calibratedTemperature, "resultA", resultA, "resultB", resultB, "rawTemperature", data.RawTemperature)
 
 	return calibratedTemperature, nil
 }
@@ -161,26 +165,26 @@ func connectToPostgres(cfg *config.Config) (*pgxpool.Pool, error) {
 func insertCalibratedData(cfg *config.Config, data *models.AfterCalibrationDataEvent) error {
 	db, err := connectToPostgres(cfg)
 	if err != nil {
-		log.Printf("Error connecting to Postgres: %v", err)
+		slog.Error("Error connecting to Postgres", "error", err)
 		return fmt.Errorf("error connecting to Postgres: %w", err)
 	}
 	defer db.Close()
 
 	tx, err := db.Begin(context.Background())
 	if err != nil {
-		log.Printf("Error beginning transaction: %v", err)
+		slog.Error("Error beginning transaction", "error", err)
 		return fmt.Errorf("error beginning transaction: %w", err)
 	}
 	defer tx.Rollback(context.Background())
 
 	_, err = tx.Exec(context.Background(), "INSERT INTO calibrated_temperature (\"rawDataId\", \"temperature\") VALUES ($1, $2)", data.RawDataID, data.CalibratedTemperature)
 	if err != nil {
-		log.Printf("Error inserting calibrated data: %v", err)
+		slog.Error("Error inserting calibrated data", "error", err)
 		return fmt.Errorf("error inserting calibrated data: %w", err)
 	}
 	err = tx.Commit(context.Background())
 	if err != nil {
-		log.Printf("Error committing transaction: %v", err)
+		slog.Error("Error committing transaction", "error", err)
 		return fmt.Errorf("error committing transaction: %w", err)
 	}
 
